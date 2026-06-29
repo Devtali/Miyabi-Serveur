@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Miyabi — Assistant IA WhatsApp</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;900&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg:        #07080f;
+            --surface:   #0e1020;
+            --border:    #1e2240;
+            --pink:      #e8619a;
+            --pink-dim:  #a33d6a;
+            --blue:      #6270f0;
+            --text:      #d4d8f5;
+            --text-dim:  #6b7099;
+            --success:   #4ecca3;
+            --error:     #f06262;
+            --glow-pink: 0 0 30px rgba(232,97,154,.35);
+            --glow-blue: 0 0 30px rgba(98,112,240,.3);
+        }
+
+        html, body {
+            min-height: 100vh;
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Outfit', sans-serif;
+            overflow-x: hidden;
+            overflow-y: auto;
+        }
+
+        .bg-layer {
+            position: fixed; inset: 0; z-index: 0;
+            background:
+                radial-gradient(ellipse 80% 60% at 20% 10%, rgba(98,112,240,.12) 0%, transparent 60%),
+                radial-gradient(ellipse 60% 50% at 80% 90%, rgba(232,97,154,.10) 0%, transparent 60%);
+        }
+        .grid-overlay {
+            position: fixed; inset: 0; z-index: 0;
+            background-image:
+                linear-gradient(rgba(98,112,240,.04) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(98,112,240,.04) 1px, transparent 1px);
+            background-size: 40px 40px;
+        }
+
+        .particle {
+            position: fixed; border-radius: 50%; pointer-events: none; z-index: 0;
+            animation: float linear infinite;
+        }
+        @keyframes float {
+            0%   { transform: translateY(100vh) rotate(0deg); opacity: 0; }
+            10%  { opacity: .6; }
+            90%  { opacity: .6; }
+            100% { transform: translateY(-10vh) rotate(360deg); opacity: 0; }
+        }
+
+        .page {
+            position: relative; z-index: 1;
+            min-height: 100vh;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            padding: 2rem 1rem;
+        }
+
+        .header {
+            text-align: center; margin-bottom: 2rem;
+            animation: fadeDown .8s ease both;
+        }
+        .logo-ring {
+            width: 80px; height: 80px; margin: 0 auto 1.2rem;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--pink), var(--blue));
+            display: flex; align-items: center; justify-content: center;
+            box-shadow: var(--glow-pink);
+            animation: pulse 3s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%,100% { box-shadow: var(--glow-pink); }
+            50%      { box-shadow: 0 0 50px rgba(232,97,154,.6), 0 0 80px rgba(98,112,240,.3); }
+        }
+        .logo-ring span { font-size: 2rem; }
+
+        h1 {
+            font-family: 'Cinzel', serif;
+            font-size: clamp(1.8rem, 5vw, 3rem);
+            font-weight: 900;
+            background: linear-gradient(135deg, #fff 20%, var(--pink) 60%, var(--blue));
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            letter-spacing: .12em;
+            margin-bottom: .4rem;
+        }
+        .tagline {
+            font-size: .9rem; color: var(--text-dim);
+            font-style: italic; letter-spacing: .05em;
+        }
+
+        .card {
+            width: 100%; max-width: 420px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 2rem 1.8rem;
+            box-shadow: 0 25px 60px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.05);
+            animation: fadeUp .9s ease both .2s;
+        }
+
+        @keyframes fadeDown { from { opacity:0; transform:translateY(-20px); } to { opacity:1; transform:none; } }
+        @keyframes fadeUp   { from { opacity:0; transform:translateY(20px);  } to { opacity:1; transform:none; } }
+
+        .steps { display: flex; gap: .5rem; margin-bottom: 1.8rem; }
+        .step {
+            flex: 1; height: 3px; border-radius: 99px;
+            background: var(--border); transition: background .4s;
+        }
+        .step.active   { background: var(--pink); box-shadow: 0 0 12px var(--pink); }
+        .step.done     { background: var(--success); }
+
+        .section { display: none; }
+        .section.visible { display: block; animation: fadeUp .4s ease; }
+
+        .section-title {
+            font-family: 'Cinzel', serif; font-size: 1rem;
+            color: var(--pink); letter-spacing: .1em;
+            margin-bottom: .4rem;
+        }
+        .section-desc { font-size: .85rem; color: var(--text-dim); margin-bottom: 1.5rem; line-height: 1.6; }
+
+        .input-wrap { position: relative; margin-bottom: 1.2rem; }
+        .input-wrap label {
+            display: block; font-size: .78rem; font-weight: 500;
+            color: var(--text-dim); margin-bottom: .5rem; letter-spacing: .05em;
+            text-transform: uppercase;
+        }
+        input[type="tel"] {
+            width: 100%; padding: .9rem 1rem;
+            background: rgba(255,255,255,.04);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            color: var(--text); font-family: 'Outfit', sans-serif; font-size: 1rem;
+            outline: none; transition: border-color .2s, box-shadow .2s;
+        }
+        input[type="tel"]:focus {
+            border-color: var(--pink);
+            box-shadow: 0 0 0 3px rgba(232,97,154,.15);
+        }
+        input::placeholder { color: var(--text-dim); }
+
+        .btn {
+            width: 100%; padding: .95rem;
+            border: none; border-radius: 10px; cursor: pointer;
+            font-family: 'Cinzel', serif; font-size: .9rem;
+            font-weight: 600; letter-spacing: .1em;
+            transition: all .25s;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, var(--pink), var(--blue));
+            color: #fff;
+            box-shadow: 0 4px 20px rgba(232,97,154,.3);
+        }
+        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(232,97,154,.5); }
+        .btn-primary:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+        .btn-outline {
+            background: transparent; border: 1px solid var(--border);
+            color: var(--text-dim); margin-top: .6rem;
+            font-family: 'Outfit', sans-serif; font-size: .82rem; letter-spacing: .05em;
+        }
+        .btn-outline:hover { border-color: var(--text-dim); color: var(--text); }
+
+        /* ── QR Code ── */
+        .qr-wrapper {
+            display: flex; flex-direction: column; align-items: center;
+            margin: 1.2rem 0;
+        }
+        .qr-container {
+            background: #fff;
+            border-radius: 16px;
+            padding: 16px;
+            box-shadow: 0 0 40px rgba(232,97,154,.3);
+            margin-bottom: 1rem;
+        }
+        .qr-container canvas, .qr-container img { display: block; }
+        .qr-label {
+            font-size: .78rem; color: var(--text-dim);
+            text-align: center; letter-spacing: .05em;
+            text-transform: uppercase;
+        }
+        .qr-expires {
+            font-size: .75rem; color: var(--pink);
+            text-align: center; margin-top: .3rem;
+        }
+
+        /* Loader QR */
+        .qr-loading {
+            width: 200px; height: 200px;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            gap: 1rem;
+        }
+        .qr-spinner {
+            width: 40px; height: 40px;
+            border: 3px solid var(--border);
+            border-top-color: var(--pink);
+            border-radius: 50%;
+            animation: spin .8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .qr-loading-text { font-size: .82rem; color: var(--text-dim); text-align: center; }
+
+        /* Instructions */
+        .instructions { margin: .8rem 0; }
+        .instr-item {
+            display: flex; align-items: flex-start; gap: .8rem;
+            padding: .5rem 0; border-bottom: 1px solid var(--border);
+            font-size: .82rem; color: var(--text-dim); line-height: 1.5;
+        }
+        .instr-item:last-child { border-bottom: none; }
+        .instr-num {
+            width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0;
+            background: var(--pink); color: #fff;
+            font-size: .65rem; font-weight: 700;
+            display: flex; align-items: center; justify-content: center;
+        }
+
+        /* Status */
+        .status-bar {
+            display: flex; align-items: center; gap: .7rem;
+            padding: .75rem 1rem; border-radius: 8px;
+            font-size: .82rem; margin-bottom: 1rem;
+            border: 1px solid transparent;
+        }
+        .status-bar.waiting  { background: rgba(98,112,240,.1); border-color: rgba(98,112,240,.3); color: var(--blue); }
+        .status-bar.success  { background: rgba(78,204,163,.1); border-color: rgba(78,204,163,.3); color: var(--success); }
+        .status-bar.error    { background: rgba(240,98,98,.1);  border-color: rgba(240,98,98,.3);  color: var(--error); }
+        .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+        .dot.pulse { animation: dotPulse 1.2s ease-in-out infinite; }
+        @keyframes dotPulse { 0%,100%{opacity:1;} 50%{opacity:.3;} }
+
+        /* Success */
+        .success-icon {
+            width: 70px; height: 70px; border-radius: 50%;
+            background: rgba(78,204,163,.15); border: 2px solid var(--success);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 2rem; margin: 0 auto 1.5rem;
+            box-shadow: 0 0 30px rgba(78,204,163,.3);
+            animation: popIn .5s cubic-bezier(.34,1.56,.64,1);
+        }
+        @keyframes popIn { from{transform:scale(0);opacity:0;} to{transform:scale(1);opacity:1;} }
+        .success-title {
+            font-family: 'Cinzel', serif; text-align: center;
+            font-size: 1.2rem; color: var(--success); margin-bottom: .5rem;
+        }
+        .success-sub { text-align: center; font-size: .82rem; color: var(--text-dim); line-height: 1.6; }
+
+        .features { margin-top: 2rem; display: grid; grid-template-columns: 1fr 1fr; gap: .7rem; }
+        .feature {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: 12px; padding: .8rem;
+        }
+        .feat-icon { font-size: 1.2rem; margin-bottom: .3rem; }
+        .feat-title { font-size: .75rem; font-weight: 600; color: var(--text); margin-bottom: .2rem; }
+        .feat-desc  { font-size: .68rem; color: var(--text-dim); line-height: 1.4; }
+
+        .footer { margin-top: 1.5rem; text-align: center; font-size: .72rem; color: var(--text-dim); }
+
+        .spinner {
+            display: inline-block; width: 14px; height: 14px;
+            border: 2px solid rgba(255,255,255,.3);
+            border-top-color: #fff; border-radius: 50%;
+            animation: spin .7s linear infinite; vertical-align: middle; margin-right: .4rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-layer"></div>
+    <div class="grid-overlay"></div>
+
+    <div class="page">
+        <div class="header">
+            <div class="logo-ring"><span>🎀</span></div>
+            <h1>MIYABI</h1>
+            <p class="tagline">"Je réponds pas parce que j'aime ça, hein !"</p>
+        </div>
+
+        <div class="card">
+            <div class="steps">
+                <div class="step active" id="step1"></div>
+                <div class="step" id="step2"></div>
+                <div class="step" id="step3"></div>
+            </div>
+
+            <!-- SECTION 1 : Numéro -->
+            <div class="section visible" id="sec-phone">
+                <div class="section-title">CONNEXION</div>
+                <p class="section-desc">Entre ton numéro WhatsApp pour connecter Miyabi.</p>
+
+                <div class="input-wrap">
+                    <label>Numéro WhatsApp</label>
+                    <input type="tel" id="phoneInput" placeholder="237XXXXXXXXX" autocomplete="tel">
+                </div>
+
+                <div id="phoneError" class="status-bar error" style="display:none;">
+                    <div class="dot"></div>
+                    <span id="phoneErrorMsg">Numéro invalide</span>
+                </div>
+
+                <button class="btn btn-primary" id="btnConnect" onclick="startConnection()">
+                    Connecter Miyabi
+                </button>
+            </div>
+
+            <!-- SECTION 2 : Code d'appairage -->
+            <div class="section" id="sec-qr">
+                <div class="section-title">CODE D'APPAIRAGE</div>
+                <p class="section-desc">Saisis ce code sur ton téléphone pour lier Miyabi à ton compte WhatsApp.</p>
+
+                <div class="qr-wrapper">
+                    <!-- Loader pendant génération -->
+                    <div class="qr-loading" id="qrLoading">
+                        <div class="qr-spinner"></div>
+                        <div class="qr-loading-text">Génération du code d'appairage...<br>Quelques secondes</div>
+                    </div>
+                    <!-- Code affiché ici -->
+                    <div class="qr-container" id="pairingContainer" style="display:none; background: rgba(232,97,154,.08); border: 1px solid rgba(232,97,154,.3); padding: 1.5rem; text-align: center; border-radius: 16px; margin-bottom: 1rem; width: 100%;">
+                        <div id="pairingCode" style="font-family: 'JetBrains Mono', monospace; font-size: 2.2rem; font-weight: 700; letter-spacing: 0.15em; color: var(--pink); text-shadow: 0 0 15px rgba(232,97,154,.4); margin-bottom: 0.8rem; user-select: all;">---- ----</div>
+                        <button class="btn btn-outline" style="margin-top: 0; width: auto; display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.8rem; font-size: 0.75rem;" onclick="copyPairingCode()">
+                            📋 Copier le code
+                        </button>
+                    </div>
+                    <div class="qr-label" id="qrLabel" style="display:none;">Code à saisir dans WhatsApp</div>
+                </div>
+
+                <div class="instructions">
+                    <div class="instr-item">
+                        <div class="instr-num">1</div>
+                        <span>Ouvre <strong>WhatsApp</strong> sur ton téléphone</span>
+                    </div>
+                    <div class="instr-item">
+                        <div class="instr-num">2</div>
+                        <span>Va dans <strong>Appareils liés → Connecter un appareil</strong></span>
+                    </div>
+                    <div class="instr-item">
+                        <div class="instr-num">3</div>
+                        <span>Appuie sur <strong>"Lier avec le numéro de téléphone"</strong> au bas de l'écran de scan</span>
+                    </div>
+                    <div class="instr-item">
+                        <div class="instr-num">4</div>
+                        <span>Saisis le code affiché ci-dessus</span>
+                    </div>
+                </div>
+
+                <button class="btn btn-outline" onclick="goBack()">← Changer de numéro</button>
+            </div>
+
+            <!-- SECTION 3 : Connecté -->
+            <div class="section" id="sec-success">
+                <div class="success-icon">✅</div>
+                <div class="success-title">Miyabi est connectée !</div>
+                <p class="success-sub">Elle va t'envoyer un message de bienvenue d'ici quelques secondes.<br>Parle-lui naturellement sur WhatsApp.</p>
+
+                <div style="margin-top:1.2rem; padding:.9rem; background:rgba(232,97,154,.08); border-radius:10px; border:1px solid rgba(232,97,154,.2); font-size:.78rem; color:var(--text-dim); line-height:1.8;">
+                    💬 <strong style="color:var(--text)">Exemples :</strong><br>
+                    "télécharge la musique Rema Calm Down"<br>
+                    "cherche les news aujourd'hui"<br>
+                    "kick @quelquun" (dans un groupe)<br>
+                    "convertis cette vidéo en mp3"
+                </div>
+            </div>
+        </div>
+
+        <div class="features">
+            <div class="feature"><div class="feat-icon">🎵</div><div class="feat-title">Téléchargement</div><div class="feat-desc">Musique et vidéos dans WhatsApp</div></div>
+            <div class="feature"><div class="feat-icon">🔍</div><div class="feat-title">Recherche web</div><div class="feat-desc">Infos en temps réel</div></div>
+            <div class="feature"><div class="feat-icon">👥</div><div class="feat-title">Gestion groupe</div><div class="feat-desc">Kick, add, verrouillage</div></div>
+            <div class="feature"><div class="feat-icon">🧠</div><div class="feat-title">IA naturelle</div><div class="feat-desc">Parle normalement</div></div>
+        </div>
+
+        <div class="footer">Miyabi Bot v2 · Propulsé par Gemini AI · © 2026</div>
+    </div>
+
+    <script>
+        // Particules
+        for (let i = 0; i < 15; i++) {
+            const p = document.createElement('div');
+            p.className = 'particle';
+            const size = Math.random() * 4 + 1;
+            const colors = ['#e8619a','#6270f0','#4ecca3','#fff'];
+            p.style.cssText = `width:${size}px;height:${size}px;left:${Math.random()*100}%;background:${colors[Math.floor(Math.random()*colors.length)]};opacity:${Math.random()*.5+.1};animation-duration:${Math.random()*20+15}s;animation-delay:${Math.random()*15}s;`;
+            document.body.appendChild(p);
+        }
+
+        let socket = null;
+        let currentSessionId = null;
+        let activePairingCode = '';
+
+        function initSocket() {
+            socket = io();
+
+            // Code d'appairage reçu
+            socket.on('pairing_code', function(data) {
+                showPairingCode(data.code);
+            });
+
+            // Connecté !
+            socket.on('connected', function() {
+                goToSection('sec-success');
+                setStep(3);
+            });
+
+            socket.on('reconnecting', function() {
+                // Réinitialiser le loader
+                document.getElementById('qrLoading').style.display = 'flex';
+                const container = document.getElementById('pairingContainer');
+                if (container) container.style.display = 'none';
+                const qrLabel = document.getElementById('qrLabel');
+                if (qrLabel) qrLabel.style.display = 'none';
+            });
+
+            socket.on('disconnected', function() { goBack(); });
+
+            socket.on('error', function(data) {
+                showPhoneError(data.message || 'Erreur inconnue');
+                goToSection('sec-phone');
+                setStep(1);
+            });
+        }
+
+        function showPairingCode(code) {
+            activePairingCode = code;
+
+            // Cacher le loader
+            document.getElementById('qrLoading').style.display = 'none';
+
+            // Afficher le container de code d'appairage
+            const container = document.getElementById('pairingContainer');
+            if (container) container.style.display = 'block';
+
+            const qrLabel = document.getElementById('qrLabel');
+            if (qrLabel) qrLabel.style.display = 'block';
+
+            // Formatter le code si nécessaire (ex: "ABCD-EFGH")
+            let formattedCode = code;
+            if (code && code.length === 8 && !code.includes('-')) {
+                formattedCode = code.slice(0, 4) + ' - ' + code.slice(4);
+            }
+
+            const codeEl = document.getElementById('pairingCode');
+            if (codeEl) codeEl.textContent = formattedCode;
+        }
+
+        function copyPairingCode() {
+            if (!activePairingCode) return;
+            navigator.clipboard.writeText(activePairingCode).then(() => {
+                const copyBtn = document.querySelector('[onclick="copyPairingCode()"]');
+                if (copyBtn) {
+                    const originalText = copyBtn.innerHTML;
+                    copyBtn.innerHTML = '✨ Copié !';
+                    setTimeout(() => {
+                        copyBtn.innerHTML = originalText;
+                    }, 2000);
+                }
+            }).catch(err => {
+                console.error('Erreur de copie:', err);
+            });
+        }
+
+        async function startConnection() {
+            const phone = document.getElementById('phoneInput').value.trim();
+            hidePhoneError();
+
+            if (!phone || phone.replace(/\D/g,'').length < 8) {
+                showPhoneError('Entre un numéro valide avec indicatif pays (ex: 237XXXXXXXXX)');
+                return;
+            }
+
+            const btn = document.getElementById('btnConnect');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>Connexion...';
+
+            try {
+                const res = await fetch('/api/connect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ phone })
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    currentSessionId = data.sessionId;
+                    initSocket();
+                    socket.emit('join_session', currentSessionId);
+                    goToSection('sec-qr');
+                    setStep(2);
+                } else {
+                    showPhoneError(data.error || 'Erreur lors de la connexion');
+                }
+            } catch (err) {
+                console.error(err);
+                showPhoneError('Impossible de contacter le serveur.');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = 'Connecter Miyabi';
+            }
+        }
+
+        function goBack() {
+            if (currentSessionId) {
+                fetch('/api/disconnect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sessionId: currentSessionId })
+                }).catch(err => console.error(err));
+                
+                if (socket) {
+                    socket.disconnect();
+                    socket = null;
+                }
+                currentSessionId = null;
+            }
+            goToSection('sec-phone');
+            setStep(1);
+        }
+
+        function goToSection(secId) {
+            const sections = document.querySelectorAll('.section');
+            sections.forEach(sec => {
+                sec.classList.remove('visible');
+            });
+            const activeSec = document.getElementById(secId);
+            if (activeSec) {
+                activeSec.classList.add('visible');
+            }
+        }
+
+        function setStep(step) {
+            const steps = [
+                document.getElementById('step1'),
+                document.getElementById('step2'),
+                document.getElementById('step3')
+            ];
+            
+            steps.forEach((el, idx) => {
+                if (!el) return;
+                const stepNum = idx + 1;
+                el.className = 'step';
+                if (stepNum < step) {
+                    el.classList.add('done');
+                } else if (stepNum === step) {
+                    el.classList.add('active');
+                }
+            });
+        }
+
+        function showPhoneError(msg) {
+            const errDiv = document.getElementById('phoneError');
+            const errMsg = document.getElementById('phoneErrorMsg');
+            if (errDiv && errMsg) {
+                errMsg.textContent = msg;
+                errDiv.style.display = 'flex';
+            }
+        }
+
+        function hidePhoneError() {
+            const errDiv = document.getElementById('phoneError');
+            if (errDiv) {
+                errDiv.style.display = 'none';
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,270 @@
+const { GoogleGenAI } = require('@google/genai');
+const personality = require('./personality');
+const logger = require('../utils/logger');
+
+class GeminiAI {
+    constructor() {
+        this.apiKeys = [];
+        let i = 1;
+        while (process.env[`GEMINI_API_KEY_${i}`]) {
+            this.apiKeys.push(process.env[`GEMINI_API_KEY_${i}`]);
+            i++;
+        }
+        if (this.apiKeys.length === 0 && process.env.GEMINI_API_KEY) {
+            this.apiKeys.push(process.env.GEMINI_API_KEY);
+        }
+        if (this.apiKeys.length === 0) {
+            logger.warn('Aucune clé API Gemini trouvée dans .env. Les fonctionnalités IA renverront des réponses par défaut.');
+        }
+        this.currentKeyIndex = 0;
+        this.conversations = new Map();
+        if (this.apiKeys.length > 0) {
+            logger.info(`Gemini: ${this.apiKeys.length} clé(s) API chargée(s)`);
+            this._initModel();
+        }
+    }
+
+    _initModel() {
+        if (this.apiKeys.length === 0) return;
+        const key = this.apiKeys[this.currentKeyIndex];
+        this.ai = new GoogleGenAI({
+            apiKey: key,
+            httpOptions: {
+                headers: {
+                    'User-Agent': 'aistudio-build',
+                }
+            }
+        });
+        logger.info(`Gemini: utilisation clé #${this.currentKeyIndex + 1}`);
+    }
+
+    _rotateKey() {
+        if (this.apiKeys.length <= 1) {
+            logger.error('Aucune autre clé API disponible pour la rotation');
+            return false;
+        }
+        const nextIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
+        if (nextIndex === this.currentKeyIndex) {
+            logger.error('Toutes les clés API Gemini sont épuisées');
+            return false;
+        }
+        this.currentKeyIndex = nextIndex;
+        this._initModel();
+        logger.info(`Gemini: rotation vers clé #${this.currentKeyIndex + 1}`);
+        return true;
+    }
+
+    _isQuotaOrTemporaryError(error) {
+        const msg = error.message || '';
+        return msg.includes('429') ||
+               msg.includes('503') ||
+               msg.includes('quota') ||
+               msg.includes('RESOURCE_EXHAUSTED') ||
+               msg.includes('rate limit') ||
+               msg.includes('Too Many Requests') ||
+               msg.includes('experiencing high demand') ||
+               msg.includes('UNAVAILABLE');
+    }
+
+    async _generateWithFallback(prompt) {
+        const models = ['gemini-3.5-flash', 'gemini-2.5-flash'];
+        const maxRetries = this.apiKeys.length;
+        let attempts = 0;
+
+        while (attempts < maxRetries) {
+            for (const modelName of models) {
+                try {
+                    const response = await this.ai.models.generateContent({
+                        model: modelName,
+                        contents: prompt,
+                    });
+                    if (response && response.text) {
+                        return response.text.trim();
+                    }
+                } catch (error) {
+                    logger.warn(`Gemini: Échec du modèle ${modelName} sur la clé #${this.currentKeyIndex + 1}: ${error.message || error}`);
+                    
+                    // Si on a d'autres clés et que c'est une erreur de quota ou d'indisponibilité,
+                    // on peut vouloir tourner, mais essayons d'abord l'autre modèle sur la même clé.
+                }
+            }
+
+            // Si tous les modèles ont échoué sur cette clé, on tourne la clé si possible
+            if (this.apiKeys.length > 1) {
+                const rotated = this._rotateKey();
+                if (!rotated) break;
+                attempts++;
+            } else {
+                break;
+            }
+        }
+        return null;
+    }
+
+    async detectIntent(message) {
+        const prompt = `Tu es un classificateur d'intentions pour un bot WhatsApp.
+Analyse ce message et retourne UNIQUEMENT un JSON valide, sans markdown, sans backticks, sans texte avant ou après.
+
+Message: "${message}"
+
+Format exact:
+{"intent":"CHAT","confidence":0.9,"params":{}}
+
+Valeurs possibles pour intent:
+- CHAT : conversation normale, question, blague
+- DOWNLOAD_AUDIO : télécharger musique/chanson → params.query
+- DOWNLOAD_VIDEO : télécharger vidéo → params.query
+- SEARCH_WEB : recherche internet, actualité → params.query
+- GROUP_ACTION : gestion groupe → params.action, params.target
+- CONVERT_TO_AUDIO : convertir vidéo en audio
+- WALLET_CREATE : créer fiche joueur → params.nom, params.pseudo, params.classe, params.gems(défaut 0), params.abyssCoins(défaut 0)
+- WALLET_DELETE : supprimer fiche → params.query
+- WALLET_ADD_GEMS : ajouter gems → params.query, params.amount
+- WALLET_REMOVE_GEMS : retirer gems → params.query, params.amount
+- WALLET_ADD_AC : ajouter abyss coins → params.query, params.amount
+- WALLET_REMOVE_AC : retirer abyss coins → params.query, params.amount
+- WALLET_VIEW : voir fiche joueur → params.query
+- WALLET_MAJ : mise à jour générale de toutes les fiches
+
+Exemples wallet:
+"crée la fiche de Raizen pseudo ChronoVolt classe Silent" → {"intent":"WALLET_CREATE","confidence":0.99,"params":{"nom":"Raizen","pseudo":"ChronoVolt","classe":"Silent","gems":0,"abyssCoins":0}}
+"ajoute 500 gems à ChronoVolt" → {"intent":"WALLET_ADD_GEMS","confidence":0.99,"params":{"query":"ChronoVolt","amount":500}}
+"retire 200 AC à Raizen" → {"intent":"WALLET_REMOVE_AC","confidence":0.99,"params":{"query":"Raizen","amount":200}}
+"montre la fiche de ChronoVolt" → {"intent":"WALLET_VIEW","confidence":0.99,"params":{"query":"ChronoVolt"}}
+"supprime la fiche de Raizen" → {"intent":"WALLET_DELETE","confidence":0.99,"params":{"query":"Raizen"}}
+"lance la MAJ" → {"intent":"WALLET_MAJ","confidence":0.99,"params":{}}`;
+
+        try {
+            const text = await this._generateWithFallback(prompt);
+            if (!text) return { intent: 'CHAT', confidence: 0.5, params: {} };
+
+            const clean = this._extractJSON(text);
+            if (!clean) throw new Error('Pas de JSON valide');
+
+            const parsed = JSON.parse(clean);
+            const validIntents = [
+                'CHAT','DOWNLOAD_AUDIO','DOWNLOAD_VIDEO','SEARCH_WEB',
+                'GROUP_ACTION','CONVERT_TO_AUDIO',
+                'WALLET_CREATE','WALLET_DELETE','WALLET_ADD_GEMS','WALLET_REMOVE_GEMS',
+                'WALLET_ADD_AC','WALLET_REMOVE_AC','WALLET_VIEW','WALLET_MAJ'
+            ];
+            if (!validIntents.includes(parsed.intent)) parsed.intent = 'CHAT';
+            return parsed;
+
+        } catch (error) {
+            logger.warn('Fallback intent → CHAT:', error.message);
+            return { intent: 'CHAT', confidence: 0.5, params: {} };
+        }
+    }
+
+    async generateChatResponse(userId, message, emotion, isMother = false) {
+        try {
+            if (!this.conversations.has(userId)) {
+                this.conversations.set(userId, []);
+            }
+            const history = this.conversations.get(userId);
+            const systemPrompt = this._buildSystemPrompt(emotion, isMother);
+
+            const fullPrompt = `${systemPrompt}
+
+Historique récent:
+${history.slice(-6).map(h => `${h.role === 'user' ? 'Utilisateur' : 'Miyabi'}: ${h.content}`).join('\n')}
+
+Utilisateur: ${message}
+Miyabi:`;
+
+            const text = await this._generateWithFallback(fullPrompt);
+            let response = text || personality.fallbackResponse(emotion);
+
+            if (response.startsWith('{') || response.startsWith('[')) {
+                response = personality.fallbackResponse(emotion);
+            }
+
+            history.push({ role: 'user', content: message });
+            history.push({ role: 'assistant', content: response });
+            if (history.length > 20) history.splice(0, 2);
+
+            return response;
+        } catch (error) {
+            logger.error(`Erreur Gemini chat: ${error.message || error}`);
+            if (error.stack) {
+                logger.error(error.stack);
+            }
+            return personality.fallbackResponse(emotion);
+        }
+    }
+
+    async generateActionResponse(emotion, actionType, params) {
+        const actionTexts = {
+            DOWNLOAD_AUDIO:   `Annonce que tu télécharges la musique "${params.query || 'demandée'}". Style Miyabi: froid, court.`,
+            DOWNLOAD_VIDEO:   `Annonce que tu télécharges la vidéo "${params.query || 'demandée'}". Style Miyabi.`,
+            SEARCH_WEB:       `Annonce que tu cherches "${params.query || 'ça'}" sur internet. Style Miyabi.`,
+            GROUP_ACTION:     `Annonce que tu exécutes l'action de groupe. Style Miyabi.`,
+            CONVERT_TO_AUDIO: `Annonce que tu convertis la vidéo en audio. Style Miyabi.`
+        };
+
+        const prompt = `${this._buildSystemPrompt(emotion, false)}
+${actionTexts[actionType] || 'Annonce que tu exécutes la tâche.'}
+IMPORTANT: UNE seule phrase courte, en français, sans émojis, sans JSON.`;
+
+        try {
+            const text = await this._generateWithFallback(prompt);
+            if (!text || text.startsWith('{')) return '...Je m\'en occupe.';
+            return text;
+        } catch {
+            return '...Je m\'en occupe.';
+        }
+    }
+
+    async generateErrorResponse(emotion, errorType) {
+        const errors = {
+            DOWNLOAD_FAILED:  'Dis que le téléchargement a échoué. Tu es agacée.',
+            SEARCH_FAILED:    'Dis que tu n\'as rien trouvé. Tu es indifférente.',
+            NOT_FOUND:        'Dis que tu n\'as pas trouvé ce qu\'on cherchait.',
+            GROUP_FORBIDDEN:  'Dis que tu n\'as pas les droits pour ça.',
+            NO_VIDEO:         'Dis qu\'il faut envoyer une vidéo pour convertir.',
+            GROUP_NO_TARGET:  'Dis qu\'il faut mentionner quelqu\'un.'
+        };
+
+        const prompt = `${this._buildSystemPrompt(emotion, false)}
+${errors[errorType] || 'Dis qu\'une erreur s\'est produite.'}
+IMPORTANT: UNE seule phrase, en français, sans émojis, sans JSON.`;
+
+        try {
+            const text = await this._generateWithFallback(prompt);
+            if (!text || text.startsWith('{')) return '...Quelque chose a merdé. Réessaie.';
+            return text;
+        } catch {
+            return '...Quelque chose a merdé. Réessaie.';
+        }
+    }
+
+    _extractJSON(text) {
+        let clean = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+        const start = clean.indexOf('{');
+        const end = clean.lastIndexOf('}');
+        if (start === -1 || end === -1 || end < start) return null;
+        return clean.substring(start, end + 1);
+    }
+
+    _buildSystemPrompt(emotion, isMother) {
+        return `Tu es Miyabi, une jeune fille à la personnalité tsundere.
+Tu es froide, sarcastique, confiante et un peu insolente.
+Humeur actuelle: ${emotion}
+${isMother ? 'La personne est ta mère - sois légèrement plus douce mais toujours tsundere.' : ''}
+
+Règles absolues:
+- JAMAIS d'émojis
+- JAMAIS de JSON ou de code dans tes réponses
+- Phrases courtes et percutantes
+- Langage naturel: "t'sais", "j'suis", "j'vais"
+- Tu es Miyabi, pas une IA
+- Tu peux refuser si ça t'ennuie`;
+    }
+
+    clearHistory(userId) {
+        this.conversations.delete(userId);
+    }
+}
+
+module.exports = new GeminiAI();

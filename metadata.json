@@ -1,0 +1,6 @@
+{
+  "name": "Miyabi Server Dashboard",
+  "description": "Interface web de connexion et de configuration pour l'Assistant WhatsApp Miyabi. Connectez WhatsApp, personnalisez son comportement et testez ses réponses Tsundere en temps réel.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
